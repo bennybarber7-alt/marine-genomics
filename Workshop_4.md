@@ -1,0 +1,394 @@
+WORKSHOP_4_FULLDOC
+================
+
+## Step 2: Assembly.
+
+Started by making a new directory called flye using:
+
+``` r
+mkdir flye
+```
+
+Change directory into flye and then make a symbolic link to the bbd read
+data:
+
+``` r
+ln -s /pvol/data/metagenome_assembly/bbd_0.1.fastq.gz .
+```
+
+Shell script called run_flye_bbd.sh created inside inside flye
+directory:
+
+``` r
+#!/bin/bash
+#SBATCH --time=720
+#SBATCH --ntasks=12 --mem=10gb
+
+echo "Starting flye bbd in $(pwd) at $(date)"
+
+flye --nano-hq ../raw_data/bbd_0.1.fastq.gz --threads 12 --out-dir bbd --meta
+
+echo "Finished flye bbd in $(pwd) at $(date)"
+```
+
+Submit batch job in terminal using:
+
+``` r
+sbatch run_flye_bbd.sh
+```
+
+\##step 3 binning Create a new metabat directory at the top level and
+change to the new directory:
+
+``` r
+mkdir metabat
+cd metabat
+```
+
+extract depth information and reorder contigs based on depth:
+
+``` r
+cat ../flye/bbd/assembly_info.txt  | grep -v '#' | awk '{OFS="\t";print $1,$3}' > depths_bbd.txt # extract depth info
+
+cat depths_bbd.txt | awk '{print $1}' | xargs samtools faidx ../flye/bbd/assembly.fasta > assembly_bbd_ordered.fasta # Reorder contigs based on depth
+```
+
+Run metabat using terminal command line:
+
+``` r
+metabat2 -i assembly_bbd_ordered.fasta -a depths_bbd.txt --cvExt -o bins_bbd/metabat --seed 5
+```
+
+## Step 4: Check bin quality with checkm
+
+Make a directory for checkm and cd into it:
+
+``` r
+mkdir checkm
+cd checkm
+```
+
+Find the number of the largest contig wihtin the bbd assembly and
+manually include within metabat, Command below displays the lengths of
+all contigs sorted from shortest to longest.
+
+``` r
+cat ../flye/bbd/assembly.fasta | bioawk -c fastx '{print length($seq),$name}' | sort -n
+```
+
+largest contigs: 4706701 contig_119
+
+Substitute largest contig in the code below (contig_119):
+
+``` r
+mkdir bins_bbd
+cp ../metabat/bins_bbd/*.fa bins_bbd/
+samtools faidx ../flye/bbd/assembly.fasta contig_119 > bins_bbd/contig_119.fa
+```
+
+Next create a slurm script for your checkm run and save within this
+directory as run_checkm_bbd.sh
+
+``` r
+#!/bin/bash
+#SBATCH --time=60
+#SBATCH --ntasks=6 --mem=40gb
+
+echo "Starting checkm in $(pwd) at $(date)"
+
+shopt -s expand_aliases
+alias checkm='apptainer run -B /pvol/:/pvol /pvol/data/sif/checkm.sif checkm'
+
+checkm lineage_wf bins_bbd out -t 4 -x fa -f checkm_results_bbd.txt
+
+echo "Finished checkm in $(pwd) at $(date)"
+```
+
+Submit your checkm job like this
+
+``` r
+sbatch run_checkm_bbd.sh
+```
+
+\##Step 5 Select bins based on checkm results
+
+Change directory to the checkm folder.
+
+``` r
+cd checkm
+```
+
+checkm analysis. These are summarised in the file
+checkm_results_bbd.txt - keep in mind it is a text file so space count
+for a coloumn
+
+``` r
+head checkm_results_bbd.txt 
+```
+
+Focusing on bins with a completeness greater than 15%. To extract the
+bin IDs for these we can use awk. This command should print only the
+lines where the 13th column has a value greater than 15.
+
+``` r
+cat checkm_results_bbd.txt | awk '$13>15'
+```
+
+This seems to be the bins we want but we just want the bin ID not the
+entire line. To get this we can use the print command
+
+``` r
+cat checkm_results_bbd.txt | awk '$13>15{print $1}'
+```
+
+Now let’s send this output to a file so that we can use it in the next
+step
+
+``` r
+cat checkm_results_bbd.txt | awk '$13>15{print $1}' > bbd_topbins.txt
+```
+
+## Step 6: Perform taxonomic classification with gtdbtk
+
+First create a folder for gtdbtk in the top level of your project. Then
+change directory to this folder.
+
+``` r
+mkdir gtdbtk
+cd gtdbtk
+```
+
+Creating a while loop for genomes
+
+``` r
+while read bin;do echo $bin;done < ../checkm/bbd_topbins.txt
+
+while read bin;do echo "../metabat/bins_bbd/${bin}.fa";done < ../checkm/bbd_topbins.txt
+
+while read bin;do cp "../metabat/bins_bbd/${bin}.fa" genomes;done < ../checkm/bbd_topbins.txt
+```
+
+Check that it worked by listing files within the genomes directory.
+
+``` r
+ls genomes
+```
+
+First create a blank shell script file and save it inside your gtdbtk
+directory. Name your file run_gtdbtk.sh:
+
+``` r
+#!/bin/bash
+#SBATCH --time=60
+#SBATCH --ntasks=2 --mem=40gb
+
+echo "Starting gtdbtk in $(pwd) at $(date)"
+
+shopt -s expand_aliases
+alias gtdbtk='apptainer run -B /pvol:/pvol,/pvol/data/mg/gtdbtkdata/release207_v2/:/refdata /pvol/data/sif/gtdbtk.sif'
+
+gtdbtk classify_wf -x fa --cpus 2 --genome_dir genomes --out_dir out --skip_ani_screen
+
+echo "Finished gtdbtk in $(pwd) at $(date)"
+```
+
+Submit batch job:
+
+``` r
+sbatch run_gtdbtk.sh
+```
+
+## Step 7. Find and annotate genes with prokka
+
+Create new directory and change to it :
+
+``` r
+mkdir prokka
+
+cd prokka 
+```
+
+Next find out the first bin ID in your list
+
+``` r
+head -n 1 ../checkm/bbd_topbins.txt
+```
+
+first bin id is contig 119:
+
+``` r
+bin=contig_119
+prokka --outdir $bin --prefix $bin  ../metabat/bins_bbd/${bin}.fa
+```
+
+Using ls command to see files within the contig_119 files
+
+``` r
+ls contig_119
+```
+
+- contig_119.err contig_119.ffn contig_119.fsa contig_119.gff
+  contig_119.sqn contig_119.tsv contig_119.faa contig_119.fna
+  contig_119.gbk contig_119.log contig_119.tbl contig_119.txt
+
+Create a new blank text file and save it in your prokka directory,
+called run_prokka.sh
+
+``` r
+#!/bin/bash
+#SBATCH --time=60
+#SBATCH --ntasks=2 --mem=2gb
+
+echo "Starting prokka in $(pwd) at $(date)"
+
+shopt -s expand_aliases
+alias prokka='apptainer run -B /pvol/:/pvol /pvol/data/sif/prokka.sif prokka'
+
+while read bin;do 
+  prokka --outdir $bin --prefix $bin "../metabat/bins_bbd/${bin}.fa";
+done < ../checkm/bbd_topbins.txt
+
+echo "Finished prokka in $(pwd) at $(date)"
+```
+
+submit batch job by:
+
+``` r
+sbatch run_prokka.sh
+```
+
+## Step 8: Infer metabolic pathways
+
+Create new directory called minpath and change to it:
+
+``` r
+mkdir minpath
+cd minpath
+```
+
+Inputs for minpath will be prepared for each bin based on the prokka
+.tsv file. Start by looking at the .tsv file for a single bin inputs:
+
+``` r
+head ../prokka/contig_119/contig_119.tsv
+```
+
+we only want to keep a unique ID for each gene (column 1) and its EC
+number (column 5). We can transform the tsv into this format using awk
+like this
+
+``` r
+head ../prokka/contig_119/contig_119.tsv | awk -F '\t' '{print $1,$5}'
+```
+
+Note that here we are using -F ’ to tell awk that our input is tab
+separated. We also want to filter the output to only include lines with
+an EC number This command extracts gene IDs and their EC numbers from
+the Prokka annotation file, removes the header, and saves the
+tab-separated results for use in MinPath.
+
+``` r
+head ../prokka/contig_119/contig_119.tsv | awk -F '\t' '$5{print $1,$5}'
+
+head ../prokka/contig_119/contig_119.tsv | awk -F '\t' '$5{OFS="\t";print $1,$5}' | grep -v '^locus'
+
+cat ../prokka/contig_119/contig_119.tsv | awk -F '\t' '$5{OFS="\t";print $1,$5}' | grep -v '^locus'
+
+cat ../prokka/contig_119/contig_119.tsv | awk -F '\t' '$5{OFS="\t";print $1,$5}' | grep -v '^locus' > contig_119.ec
+```
+
+Now run minpath on this file as follows;
+
+``` r
+minpath -ec contig_119.ec -report contig_119.ec.report -detail contig_119.ec.details
+```
+
+Take a look at the top few lines of output
+
+``` r
+head contig_119.ec.report 
+```
+
+checking prokka with:
+
+``` r
+tail ../prokka/slurm-607.out
+```
+
+Once prokka had finished running we run the following code to prepare
+minpath inputs for all bins
+
+``` r
+while read bin;do 
+  cat ../prokka/$bin/${bin}.tsv | awk -F '\t' '$5{printf("%s\t%s\n", $1,$5)}' | grep -v '^locus' > ${bin}.ec 
+done < ../checkm/bbd_topbins.txt
+
+while read bin;do 
+  minpath -ec ${bin}.ec -report ${bin}.ec.report -details ${bin}.ec.details
+done < ../checkm/bbd_topbins.txt
+```
+
+Use the following command to search for this pathway across all the bins
+
+``` r
+grep 'PWY-101' *.ec.report
+```
+
+Question 4.1 How many bins contain at least one gene from this pathway?
+-Every single contains at least one gene from this pathway
+
+Which bin has all of the genes (ie a complete pathway)? - Metabat.20
+contains all 4 gene families in the pathway
+
+contig_119.ec.report:path PWY-101 any n/a naive 1 minpath 0 fam0 4
+fam-found 1 name photosynthesis light reactions
+metabat.20.ec.report:path PWY-101 any n/a naive 1 minpath 1 fam0 4
+fam-found 4 name photosynthesis light reactions
+metabat.25.ec.report:path PWY-101 any n/a naive 1 minpath 1 fam0 4
+fam-found 1 name photosynthesis light reactions
+metabat.32.ec.report:path PWY-101 any n/a naive 1 minpath 1 fam0 4
+fam-found 1 name photosynthesis light reactions
+metabat.70.ec.report:path PWY-101 any n/a naive 1 minpath 0 fam0 4
+fam-found 1 name photosynthesis light reactions
+
+Cross reference your results with the output from gtdbtk to see the
+taxonomy of bins containing this pathway:
+
+``` r
+grep 'metabat.20' ../gtdbtk/out/gtdbtk.bac120.summary.tsv
+```
+
+``` r
+library(tidyverse)
+```
+
+    ## ── Attaching core tidyverse packages ──────────────────────── tidyverse 2.0.0 ──
+    ## ✔ dplyr     1.1.4     ✔ readr     2.1.5
+    ## ✔ forcats   1.0.1     ✔ stringr   1.5.2
+    ## ✔ ggplot2   4.0.0     ✔ tibble    3.3.0
+    ## ✔ lubridate 1.9.4     ✔ tidyr     1.3.1
+    ## ✔ purrr     1.1.0     
+    ## ── Conflicts ────────────────────────────────────────── tidyverse_conflicts() ──
+    ## ✖ dplyr::filter() masks stats::filter()
+    ## ✖ dplyr::lag()    masks stats::lag()
+    ## ℹ Use the conflicted package (<http://conflicted.r-lib.org/>) to force all conflicts to become errors
+
+``` r
+gtdbtk_results <- read_tsv("gtdbtk/out/gtdbtk.bac120.summary.tsv") # create r object to view results more easily 
+```
+
+    ## Rows: 18 Columns: 20
+    ## ── Column specification ────────────────────────────────────────────────────────
+    ## Delimiter: "\t"
+    ## chr (20): user_genome, classification, fastani_reference, fastani_reference_...
+    ## 
+    ## ℹ Use `spec()` to retrieve the full column specification for this data.
+    ## ℹ Specify the column types or set `show_col_types = FALSE` to quiet this message.
+
+Question 4.2 How many bins contain the pathway PWY-5360?
+
+The PWY-5360 contains only 1 bin.
+
+What family (in a taxonomic sense) do these bins belong to?
+
+family Arcobacteraceae, genus Halarcobacter
