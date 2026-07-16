@@ -39,7 +39,7 @@ sbatch run_flye_bbd.sh
 ```
 
 
-## Step 3 binning
+## Step 3 binning. 
 Create a new metabat directory at the top level and change to the new directory:
 ```{r, eval=FALSE}
 mkdir metabat
